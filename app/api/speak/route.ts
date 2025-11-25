@@ -1,9 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,14 +20,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const mp3 = await openai.audio.speech.create({
-      model: "tts-1",
-      voice: "alloy",
-      input: text,
-      speed: 1.0,
+    console.log("Generating speech for text:", text.substring(0, 50) + "...");
+
+    // Use fetch API directly instead of OpenAI SDK
+    const response = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "tts-1",
+        voice: "alloy",
+        input: text,
+        speed: 1.0,
+      }),
     });
 
-    const buffer = Buffer.from(await mp3.arrayBuffer());
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("OpenAI TTS API error:", response.status, errorText);
+      throw new Error(`OpenAI API returned ${response.status}: ${errorText}`);
+    }
+
+    const audioBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(audioBuffer);
+
+    console.log("Speech generated successfully, size:", buffer.length, "bytes");
 
     return new NextResponse(buffer, {
       headers: {
@@ -40,10 +54,10 @@ export async function POST(request: NextRequest) {
         "Content-Length": buffer.length.toString(),
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("TTS error:", error);
     return NextResponse.json(
-      { error: "Failed to generate speech" },
+      { error: "Failed to generate speech", details: error.message },
       { status: 500 }
     );
   }

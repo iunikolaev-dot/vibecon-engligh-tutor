@@ -129,7 +129,11 @@ export default function Home() {
       setCurrentAudio(audioUrl);
       if (audioRef.current) {
         audioRef.current.src = audioUrl;
-        audioRef.current.play();
+        // Try to play, handle autoplay blocking
+        audioRef.current.play().catch((err) => {
+          console.log("Autoplay blocked, user needs to interact:", err);
+          // Audio will still be available via the 🔊 button in chat
+        });
       }
 
       setStatus("✅ Ready for your next message");
