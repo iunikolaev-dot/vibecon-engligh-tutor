@@ -181,6 +181,9 @@ export default function Home() {
           <p className="text-gray-600 dark:text-gray-300">
             Your English Tutor (Voice Edition)
           </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            v2.0 (Direct API) - Build {new Date().toISOString().slice(0,16).replace('T', ' ')}
+          </p>
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 mb-4">
