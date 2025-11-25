@@ -81,13 +81,33 @@ export default function Home() {
         addDebugEvent("🎵 Audio track received from OpenAI");
         if (audioElementRef.current) {
           audioElementRef.current.srcObject = e.streams[0];
+          audioElementRef.current.play().catch((err) => {
+            addDebugEvent(`⚠️ Audio playback error: ${err.message}`);
+          });
         }
       };
 
-      // Add local audio track
+      // Monitor connection state
+      pc.onconnectionstatechange = () => {
+        addDebugEvent(`🔗 Connection state: ${pc.connectionState}`);
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        addDebugEvent(`🧊 ICE state: ${pc.iceConnectionState}`);
+      };
+
+      // Add local audio track with specific constraints
       addDebugEvent("🎤 Requesting microphone access...");
-      const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
-      pc.addTrack(ms.getTracks()[0]);
+      const ms = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 24000,
+        } 
+      });
+      const audioTrack = ms.getTracks()[0];
+      addDebugEvent(`✅ Microphone track: ${audioTrack.label}, state: ${audioTrack.readyState}`);
+      pc.addTrack(audioTrack, ms);
       addDebugEvent("✅ Microphone connected");
 
       // Set up data channel for session config
@@ -117,8 +137,7 @@ export default function Home() {
               type: "server_vad",
               threshold: 0.5,
               prefix_padding_ms: 300,
-              silence_duration_ms: 500,
-              create_response: true,
+              silence_duration_ms: 700,
             },
           },
         };
@@ -165,30 +184,8 @@ export default function Home() {
           setStatus("user_speech_ended");
           setStatusMessage("⏳ Processing your speech...");
           
-          // Commit the audio buffer (might not be automatic)
-          setTimeout(() => {
-            addDebugEvent("💾 Committing audio buffer...");
-            const commitCommand = {
-              type: "input_audio_buffer.commit",
-            };
-            if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
-              dataChannelRef.current.send(JSON.stringify(commitCommand));
-            }
-          }, 100);
-          
-          // Manually trigger response creation after speech stops
-          setTimeout(() => {
-            addDebugEvent("🚀 Triggering AI response...");
-            const responseRequest = {
-              type: "response.create",
-              response: {
-                modalities: ["text", "audio"],
-              },
-            };
-            if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
-              dataChannelRef.current.send(JSON.stringify(responseRequest));
-            }
-          }, 200);
+          // Note: Don't commit manually - let server VAD handle it
+          // The buffer being empty suggests audio isn't flowing properly
         }
 
         // Conversation item events (transcription)
