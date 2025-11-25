@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
+import { writeFile } from "fs/promises";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -28,22 +31,35 @@ export async function POST(request: NextRequest) {
 
     console.log("Transcribing audio file:", audioFile.name, audioFile.size, "bytes");
 
-    // Convert File to Buffer for OpenAI SDK compatibility
+    // Save file temporarily to disk (OpenAI SDK needs a real file path)
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    const tempFilePath = path.join("/tmp", `audio-${Date.now()}.mp4`);
     
-    // Create a File-like object that OpenAI SDK can handle
-    const file = new File([buffer], audioFile.name, { type: audioFile.type });
+    await writeFile(tempFilePath, buffer);
+    console.log("Saved temp file:", tempFilePath);
 
-    // Convert to format Whisper expects
-    const transcription = await openai.audio.transcriptions.create({
-      file: file,
-      model: "whisper-1",
-      language: "en",
-    });
+    try {
+      // Use fs.createReadStream for OpenAI SDK
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(tempFilePath) as any,
+        model: "whisper-1",
+        language: "en",
+      });
 
-    console.log("Transcription successful:", transcription.text);
-    return NextResponse.json({ text: transcription.text });
+      // Clean up temp file
+      fs.unlinkSync(tempFilePath);
+      
+      console.log("Transcription successful:", transcription.text);
+      return NextResponse.json({ text: transcription.text });
+    } catch (transcribeError: any) {
+      // Clean up temp file even on error
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+      throw transcribeError;
+    }
+
   } catch (error: any) {
     console.error("Transcription error:", error);
     console.error("Error details:", {
