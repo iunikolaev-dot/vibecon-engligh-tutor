@@ -108,8 +108,8 @@ export default function Home() {
         body: JSON.stringify({ text: aiText }),
       });
 
-      const audioBlob = await ttsResponse.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
+      const responseAudioBlob = await ttsResponse.blob();
+      const audioUrl = URL.createObjectURL(responseAudioBlob);
 
       // Add AI message to conversation
       setConversation((prev) => [
