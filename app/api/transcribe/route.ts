@@ -11,8 +11,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const formData = await request.formData();
-    const audioFile = formData.get("audio") as File;
+    const requestFormData = await request.formData();
+    const audioFile = requestFormData.get("audio") as File;
 
     if (!audioFile) {
       return NextResponse.json(
@@ -24,10 +24,10 @@ export async function POST(request: NextRequest) {
     console.log("Transcribing audio file:", audioFile.name, audioFile.size, "bytes");
 
     // Use fetch API directly instead of OpenAI SDK (better for Vercel serverless)
-    const formData = new FormData();
-    formData.append("file", audioFile);
-    formData.append("model", "whisper-1");
-    formData.append("language", "en");
+    const apiFormData = new FormData();
+    apiFormData.append("file", audioFile);
+    apiFormData.append("model", "whisper-1");
+    apiFormData.append("language", "en");
 
     console.log("Calling OpenAI Whisper API directly...");
     
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
-      body: formData,
+      body: apiFormData,
     });
 
     if (!response.ok) {
