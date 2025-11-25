@@ -3,23 +3,41 @@
 import { useState, useRef, useEffect } from "react";
 
 interface Message {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
 }
 
+type AppStatus = 
+  | "not_connected"
+  | "connecting"
+  | "connected_idle"
+  | "user_speaking"
+  | "user_speech_ended"
+  | "ai_thinking"
+  | "ai_speaking"
+  | "error";
+
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [status, setStatus] = useState("Not connected");
+  const [status, setStatus] = useState<AppStatus>("not_connected");
+  const [statusMessage, setStatusMessage] = useState("Not connected");
   const [isMuted, setIsMuted] = useState(false);
   const [conversation, setConversation] = useState<Message[]>([]);
+  const [debugEvents, setDebugEvents] = useState<string[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
   const [currentUserTranscript, setCurrentUserTranscript] = useState("");
   const [currentAssistantTranscript, setCurrentAssistantTranscript] = useState("");
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
+
+  const addDebugEvent = (event: string) => {
+    setDebugEvents((prev) => [...prev.slice(-20), `[${new Date().toLocaleTimeString()}] ${event}`]);
+    console.log(event);
+  };
 
   useEffect(() => {
     // Create audio element for playback
@@ -36,10 +54,13 @@ export default function Home() {
 
   const startConversation = async () => {
     setIsConnecting(true);
-    setStatus("Connecting...");
+    setStatus("connecting");
+    setStatusMessage("Connecting to OpenAI...");
+    addDebugEvent("🔌 Starting connection...");
 
     try {
       // Get ephemeral token from our API
+      addDebugEvent("📡 Requesting session token...");
       const tokenResponse = await fetch("/api/session");
       const data = await tokenResponse.json();
 
@@ -48,28 +69,35 @@ export default function Home() {
       }
 
       const EPHEMERAL_KEY = data.client_secret.value;
+      addDebugEvent("✅ Session token received");
 
       // Create peer connection
+      addDebugEvent("🔗 Creating WebRTC connection...");
       const pc = new RTCPeerConnection();
       peerConnectionRef.current = pc;
 
       // Set up audio for playback
       pc.ontrack = (e) => {
+        addDebugEvent("🎵 Audio track received from OpenAI");
         if (audioElementRef.current) {
           audioElementRef.current.srcObject = e.streams[0];
         }
       };
 
       // Add local audio track
+      addDebugEvent("🎤 Requesting microphone access...");
       const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
       pc.addTrack(ms.getTracks()[0]);
+      addDebugEvent("✅ Microphone connected");
 
       // Set up data channel for session config
       const dc = pc.createDataChannel("oai-events");
       dataChannelRef.current = dc;
 
       dc.addEventListener("open", () => {
-        setStatus("Connected! Listening...");
+        addDebugEvent("✅ Data channel opened!");
+        setStatus("connected_idle");
+        setStatusMessage("Connected! Waiting for you to speak...");
         setIsConnected(true);
         setIsConnecting(false);
 
@@ -94,38 +122,102 @@ export default function Home() {
           },
         };
 
-        console.log("Sending session config:", sessionConfig);
+        addDebugEvent("📤 Sending session configuration...");
         dc.send(JSON.stringify(sessionConfig));
+
+        // Trigger initial greeting from AI
+        setTimeout(() => {
+          addDebugEvent("👋 Requesting initial greeting...");
+          const greetingPrompt = {
+            type: "response.create",
+            response: {
+              modalities: ["text", "audio"],
+              instructions: "Greet Ilya and ask him what he'd like to focus on today: business/marketing or lifestyle topics. Keep it short and natural.",
+            },
+          };
+          dc.send(JSON.stringify(greetingPrompt));
+        }, 500);
       });
 
       dc.addEventListener("message", (e) => {
         const msg = JSON.parse(e.data);
-        console.log("OpenAI event:", msg.type, msg);
+        addDebugEvent(`📨 Event: ${msg.type}`);
 
-        // Handle user speech transcription
-        if (msg.type === "conversation.item.input_audio_transcription.completed") {
-          const transcript = msg.transcript || "";
-          setCurrentUserTranscript(transcript);
-          setConversation((prev) => [
-            ...prev,
-            { role: "user", content: transcript, timestamp: new Date() },
-          ]);
-          setStatus("Processing...");
+        // Session events
+        if (msg.type === "session.created") {
+          addDebugEvent("✅ Session created successfully");
         }
 
-        // Handle assistant response text
-        if (msg.type === "response.text.delta") {
-          setCurrentAssistantTranscript((prev) => prev + (msg.delta || ""));
-          setStatus("AI is speaking...");
+        if (msg.type === "session.updated") {
+          addDebugEvent("✅ Session configured");
+        }
+
+        // Input audio events (when YOU speak)
+        if (msg.type === "input_audio_buffer.speech_started") {
+          addDebugEvent("🎤 You started speaking");
+          setStatus("user_speaking");
+          setStatusMessage("🎤 Listening to you...");
+        }
+
+        if (msg.type === "input_audio_buffer.speech_stopped") {
+          addDebugEvent("🛑 You stopped speaking");
+          setStatus("user_speech_ended");
+          setStatusMessage("⏳ Processing your speech...");
+        }
+
+        // Conversation item events (transcription)
+        if (msg.type === "conversation.item.created") {
+          addDebugEvent(`💬 Conversation item created: ${msg.item?.role || "unknown"}`);
+        }
+
+        if (msg.type === "conversation.item.input_audio_transcription.completed") {
+          const transcript = msg.transcript || "";
+          addDebugEvent(`📝 Your transcript: "${transcript}"`);
+          setCurrentUserTranscript(transcript);
+          if (transcript) {
+            setConversation((prev) => [
+              ...prev,
+              { role: "user", content: transcript, timestamp: new Date() },
+            ]);
+          }
+          setStatus("ai_thinking");
+          setStatusMessage("🤔 AI is thinking...");
+        }
+
+        // Response events (AI responding)
+        if (msg.type === "response.created") {
+          addDebugEvent("🤖 AI response started");
+          setStatus("ai_thinking");
+          setStatusMessage("🤔 AI is preparing response...");
+        }
+
+        if (msg.type === "response.output_item.added") {
+          addDebugEvent("📤 AI output item added");
+        }
+
+        if (msg.type === "response.content_part.added") {
+          addDebugEvent("📄 AI content part added");
+        }
+
+        if (msg.type === "response.audio.delta") {
+          // Audio chunks being sent
+          if (status !== "ai_speaking") {
+            setStatus("ai_speaking");
+            setStatusMessage("🔊 AI is speaking...");
+            addDebugEvent("🔊 AI started speaking");
+          }
         }
 
         if (msg.type === "response.audio_transcript.delta") {
-          setCurrentAssistantTranscript((prev) => prev + (msg.delta || ""));
-          setStatus("AI is speaking...");
+          const delta = msg.delta || "";
+          setCurrentAssistantTranscript((prev) => prev + delta);
+          setStatus("ai_speaking");
+          setStatusMessage("🔊 AI is speaking...");
         }
 
         if (msg.type === "response.audio_transcript.done") {
           const transcript = msg.transcript || currentAssistantTranscript;
+          addDebugEvent(`🗣️ AI transcript: "${transcript}"`);
           if (transcript) {
             setConversation((prev) => [
               ...prev,
@@ -133,28 +225,39 @@ export default function Home() {
             ]);
             setCurrentAssistantTranscript("");
           }
-          setStatus("Listening...");
         }
 
         if (msg.type === "response.done") {
-          setStatus("Listening...");
+          addDebugEvent("✅ AI response completed");
+          setStatus("connected_idle");
+          setStatusMessage("👂 Listening... (speak now)");
           setCurrentAssistantTranscript("");
         }
 
-        // Handle errors
+        // Rate limit info
+        if (msg.type === "rate_limits.updated") {
+          addDebugEvent(`📊 Rate limits updated`);
+        }
+
+        // Error handling
         if (msg.type === "error") {
+          const errorMsg = msg.error?.message || "Unknown error";
+          addDebugEvent(`❌ Error: ${errorMsg}`);
+          setStatus("error");
+          setStatusMessage(`Error: ${errorMsg}`);
           console.error("OpenAI error:", msg.error);
-          setStatus("Error: " + (msg.error?.message || "Unknown error"));
         }
       });
 
       // Create and set local description
+      addDebugEvent("📋 Creating offer...");
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       // Send offer to OpenAI
       const baseUrl = "https://api.openai.com/v1/realtime";
       const model = "gpt-4o-realtime-preview-2024-12-17";
+      addDebugEvent(`📡 Connecting to ${model}...`);
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: "POST",
         body: offer.sdp,
@@ -164,20 +267,30 @@ export default function Home() {
         },
       });
 
+      if (!sdpResponse.ok) {
+        const errorText = await sdpResponse.text();
+        throw new Error(`OpenAI API error: ${sdpResponse.status} - ${errorText}`);
+      }
+
       const answerSdp = await sdpResponse.text();
       await pc.setRemoteDescription({
         type: "answer",
         sdp: answerSdp,
       });
+      addDebugEvent("✅ WebRTC connection established");
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      addDebugEvent(`❌ Connection failed: ${errorMsg}`);
       console.error("Connection error:", error);
-      setStatus("Connection failed. Please try again.");
+      setStatus("error");
+      setStatusMessage("Connection failed. Please try again.");
       setIsConnecting(false);
       setIsConnected(false);
     }
   };
 
   const stopConversation = () => {
+    addDebugEvent("🛑 Stopping conversation...");
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -187,7 +300,32 @@ export default function Home() {
       dataChannelRef.current = null;
     }
     setIsConnected(false);
-    setStatus("Disconnected");
+    setStatus("not_connected");
+    setStatusMessage("Disconnected");
+    addDebugEvent("✅ Disconnected");
+  };
+
+  const getStatusColor = (status: AppStatus): string => {
+    switch (status) {
+      case "not_connected":
+        return "bg-gray-500";
+      case "connecting":
+        return "bg-yellow-500 animate-pulse";
+      case "connected_idle":
+        return "bg-green-500";
+      case "user_speaking":
+        return "bg-blue-500 animate-pulse";
+      case "user_speech_ended":
+        return "bg-orange-500";
+      case "ai_thinking":
+        return "bg-purple-500 animate-pulse";
+      case "ai_speaking":
+        return "bg-indigo-500 animate-pulse";
+      case "error":
+        return "bg-red-500";
+      default:
+        return "bg-gray-500";
+    }
   };
 
   const clearConversation = () => {
@@ -240,16 +378,50 @@ export default function Home() {
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 mb-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex-1">
-              <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 text-center">
-                <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">
-                  Status
-                </p>
-                <p className="text-lg font-semibold text-gray-800 dark:text-white">
-                  {status}
-                </p>
+              <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm text-gray-600 dark:text-gray-300">
+                    Status
+                  </p>
+                  <button
+                    onClick={() => setShowDebug(!showDebug)}
+                    className="text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded hover:bg-gray-300 dark:hover:bg-gray-500"
+                  >
+                    {showDebug ? "Hide" : "Show"} Debug
+                  </button>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className={`w-3 h-3 rounded-full ${getStatusColor(status)}`}></div>
+                  <p className="text-lg font-semibold text-gray-800 dark:text-white">
+                    {statusMessage}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
+
+          {showDebug && (
+            <div className="mb-4 bg-black text-green-400 p-4 rounded-lg font-mono text-xs max-h-48 overflow-y-auto">
+              <div className="flex justify-between items-center mb-2">
+                <p className="font-bold text-green-300">Debug Console</p>
+                <button
+                  onClick={() => setDebugEvents([])}
+                  className="text-red-400 hover:text-red-300"
+                >
+                  Clear
+                </button>
+              </div>
+              {debugEvents.length === 0 ? (
+                <p className="opacity-50">No events yet...</p>
+              ) : (
+                debugEvents.map((event, idx) => (
+                  <div key={idx} className="mb-1">
+                    {event}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
 
           <div className="space-y-3">
             {!isConnected && !isConnecting && (
@@ -309,6 +481,32 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {isConnected && (
+            <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+              <p className="text-xs font-bold text-blue-800 dark:text-blue-300 mb-2">
+                Status Guide:
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-xs text-blue-700 dark:text-blue-300">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                  <span>Ready/Idle</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                  <span>You Speaking</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                  <span>AI Thinking</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                  <span>AI Speaking</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {conversation.length > 0 && (
