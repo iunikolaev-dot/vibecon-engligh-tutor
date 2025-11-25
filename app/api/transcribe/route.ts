@@ -1,12 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-import fs from "fs";
-import path from "path";
-import { writeFile } from "fs/promises";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,34 +23,32 @@ export async function POST(request: NextRequest) {
 
     console.log("Transcribing audio file:", audioFile.name, audioFile.size, "bytes");
 
-    // Save file temporarily to disk (OpenAI SDK needs a real file path)
-    const arrayBuffer = await audioFile.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const tempFilePath = path.join("/tmp", `audio-${Date.now()}.mp4`);
+    // Use fetch API directly instead of OpenAI SDK (better for Vercel serverless)
+    const formData = new FormData();
+    formData.append("file", audioFile);
+    formData.append("model", "whisper-1");
+    formData.append("language", "en");
+
+    console.log("Calling OpenAI Whisper API directly...");
     
-    await writeFile(tempFilePath, buffer);
-    console.log("Saved temp file:", tempFilePath);
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: formData,
+    });
 
-    try {
-      // Use fs.createReadStream for OpenAI SDK
-      const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tempFilePath) as any,
-        model: "whisper-1",
-        language: "en",
-      });
-
-      // Clean up temp file
-      fs.unlinkSync(tempFilePath);
-      
-      console.log("Transcription successful:", transcription.text);
-      return NextResponse.json({ text: transcription.text });
-    } catch (transcribeError: any) {
-      // Clean up temp file even on error
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-      }
-      throw transcribeError;
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("OpenAI API error:", response.status, errorText);
+      throw new Error(`OpenAI API returned ${response.status}: ${errorText}`);
     }
+
+    const result = await response.json();
+    console.log("Transcription successful:", result.text);
+    
+    return NextResponse.json({ text: result.text });
 
   } catch (error: any) {
     console.error("Transcription error:", error);
