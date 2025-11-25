@@ -46,8 +46,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ text: transcription.text });
   } catch (error: any) {
     console.error("Transcription error:", error);
+    console.error("Error details:", {
+      message: error.message,
+      status: error.status,
+      type: error.type,
+      stack: error.stack,
+      response: error.response?.data
+    });
     return NextResponse.json(
-      { error: "Failed to transcribe audio", details: error.message },
+      { 
+        error: "Failed to transcribe audio", 
+        details: error.message,
+        status: error.status,
+        type: error.type,
+        apiKeyPresent: !!process.env.OPENAI_API_KEY,
+        apiKeyPrefix: process.env.OPENAI_API_KEY?.substring(0, 10)
+      },
       { status: 500 }
     );
   }
