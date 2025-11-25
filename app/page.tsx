@@ -186,7 +186,7 @@ export default function Home() {
             Your English Tutor (Voice Edition)
           </p>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-            v2.0 (Direct API) - Build {new Date().toISOString().slice(0,16).replace('T', ' ')}
+            v2.1 (Direct API + TTS Fixed) - Build {new Date(Date.now() + (4 * 60 * 60 * 1000)).toISOString().slice(0,16).replace('T', ' ')} GMT+4
           </p>
         </div>
 
