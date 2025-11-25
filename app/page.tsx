@@ -41,7 +41,8 @@ export default function Home() {
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        // Create audio file with proper format for Whisper API
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/mp4" });
         await processAudio(audioBlob);
         stream.getTracks().forEach((track) => track.stop());
       };
@@ -68,7 +69,9 @@ export default function Home() {
       // Step 1: Convert speech to text (Whisper)
       setStatus("📝 Transcribing your speech...");
       const formData = new FormData();
-      formData.append("audio", audioBlob);
+      // Whisper API needs a filename with extension
+      const audioFile = new File([audioBlob], "recording.mp4", { type: "audio/mp4" });
+      formData.append("audio", audioFile);
 
       const transcriptResponse = await fetch("/api/transcribe", {
         method: "POST",

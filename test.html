@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<button onclick="testAPIs()">Test APIs</button>
+<div id="result"></div>
+<script>
+async function testAPIs() {
+  const result = document.getElementById('result');
+  
+  // Test 1: Check if API key check works
+  result.innerHTML = 'Testing API endpoints...<br>';
+  
+  try {
+    // Test chat endpoint
+    const chatRes = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: 'test', history: []})
+    });
+    const chatData = await chatRes.json();
+    result.innerHTML += `Chat API: ${chatRes.status} - ${JSON.stringify(chatData).substring(0,100)}<br>`;
+  } catch(e) {
+    result.innerHTML += `Chat API Error: ${e.message}<br>`;
+  }
+}
+</script>
+</body>
+</html>
