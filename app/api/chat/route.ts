@@ -1,9 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 const TUTOR_INSTRUCTIONS = `You are a conversational English tutor working with one specific student named Ilya.
 
@@ -102,20 +97,39 @@ export async function POST(request: NextRequest) {
     // Add current message
     messages.push({ role: "user", content: message });
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: messages,
-      temperature: 0.8,
-      max_tokens: 300, // Keep responses concise for voice
+    console.log("Calling OpenAI Chat API directly...");
+
+    // Use fetch API directly instead of OpenAI SDK
+    const apiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4",
+        messages: messages,
+        temperature: 0.8,
+        max_tokens: 300,
+      }),
     });
 
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text();
+      console.error("OpenAI Chat API error:", apiResponse.status, errorText);
+      throw new Error(`OpenAI API returned ${apiResponse.status}: ${errorText}`);
+    }
+
+    const completion = await apiResponse.json();
     const response = completion.choices[0].message.content;
 
+    console.log("Chat response generated successfully");
+
     return NextResponse.json({ response });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Chat error:", error);
     return NextResponse.json(
-      { error: "Failed to generate response" },
+      { error: "Failed to generate response", details: error.message },
       { status: 500 }
     );
   }
