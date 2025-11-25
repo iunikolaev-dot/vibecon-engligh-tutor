@@ -64,12 +64,15 @@ export default function Home() {
       const tokenResponse = await fetch("/api/session");
       const data = await tokenResponse.json();
 
+      addDebugEvent(`📦 Session response: ${JSON.stringify(data).substring(0, 100)}...`);
+
       if (!data.client_secret?.value) {
+        addDebugEvent(`❌ No client_secret in response: ${JSON.stringify(data)}`);
         throw new Error("Failed to get session token");
       }
 
       const EPHEMERAL_KEY = data.client_secret.value;
-      addDebugEvent("✅ Session token received");
+      addDebugEvent(`✅ Session token received: ${EPHEMERAL_KEY.substring(0, 10)}...`);
 
       // Create peer connection
       addDebugEvent("🔗 Creating WebRTC connection...");
@@ -296,6 +299,10 @@ export default function Home() {
 
       if (!sdpResponse.ok) {
         const errorText = await sdpResponse.text();
+        addDebugEvent(`❌ SDP Response status: ${sdpResponse.status}`);
+        addDebugEvent(`❌ SDP Response body: ${errorText}`);
+        addDebugEvent(`❌ Request was to: ${baseUrl}?model=${model}`);
+        addDebugEvent(`❌ Auth header: Bearer ${EPHEMERAL_KEY.substring(0, 15)}...`);
         throw new Error(`OpenAI API error: ${sdpResponse.status} - ${errorText}`);
       }
 
