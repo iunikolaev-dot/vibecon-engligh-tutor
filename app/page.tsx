@@ -118,6 +118,7 @@ export default function Home() {
               threshold: 0.5,
               prefix_padding_ms: 300,
               silence_duration_ms: 500,
+              create_response: true,
             },
           },
         };
@@ -163,11 +164,40 @@ export default function Home() {
           addDebugEvent("🛑 You stopped speaking");
           setStatus("user_speech_ended");
           setStatusMessage("⏳ Processing your speech...");
+          
+          // Commit the audio buffer (might not be automatic)
+          setTimeout(() => {
+            addDebugEvent("💾 Committing audio buffer...");
+            const commitCommand = {
+              type: "input_audio_buffer.commit",
+            };
+            if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
+              dataChannelRef.current.send(JSON.stringify(commitCommand));
+            }
+          }, 100);
+          
+          // Manually trigger response creation after speech stops
+          setTimeout(() => {
+            addDebugEvent("🚀 Triggering AI response...");
+            const responseRequest = {
+              type: "response.create",
+              response: {
+                modalities: ["text", "audio"],
+              },
+            };
+            if (dataChannelRef.current && dataChannelRef.current.readyState === "open") {
+              dataChannelRef.current.send(JSON.stringify(responseRequest));
+            }
+          }, 200);
         }
 
         // Conversation item events (transcription)
         if (msg.type === "conversation.item.created") {
           addDebugEvent(`💬 Conversation item created: ${msg.item?.role || "unknown"}`);
+        }
+
+        if (msg.type === "input_audio_buffer.committed") {
+          addDebugEvent("✅ Audio buffer committed to conversation");
         }
 
         if (msg.type === "conversation.item.input_audio_transcription.completed") {
