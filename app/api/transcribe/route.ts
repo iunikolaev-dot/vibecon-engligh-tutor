@@ -7,6 +7,15 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
+    // Check if API key is available
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("OPENAI_API_KEY is not set!");
+      return NextResponse.json(
+        { error: "OpenAI API key not configured" },
+        { status: 500 }
+      );
+    }
+
     const formData = await request.formData();
     const audioFile = formData.get("audio") as File;
 
@@ -17,6 +26,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    console.log("Transcribing audio file:", audioFile.name, audioFile.size, "bytes");
+
     // Convert to format Whisper expects
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
@@ -24,11 +35,12 @@ export async function POST(request: NextRequest) {
       language: "en",
     });
 
+    console.log("Transcription successful:", transcription.text);
     return NextResponse.json({ text: transcription.text });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Transcription error:", error);
     return NextResponse.json(
-      { error: "Failed to transcribe audio" },
+      { error: "Failed to transcribe audio", details: error.message },
       { status: 500 }
     );
   }

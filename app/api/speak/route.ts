@@ -7,6 +7,15 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
+    // Check if API key is available
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("OPENAI_API_KEY is not set!");
+      return NextResponse.json(
+        { error: "OpenAI API key not configured" },
+        { status: 500 }
+      );
+    }
+
     const { text } = await request.json();
 
     if (!text) {

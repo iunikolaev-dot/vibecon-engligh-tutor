@@ -75,11 +75,6 @@ export default function Home() {
         body: formData,
       });
 
-      if (!transcriptResponse.ok) {
-        const errorData = await transcriptResponse.json();
-        throw new Error(`Transcription failed: ${JSON.stringify(errorData)}`);
-      }
-
       const { text: userText } = await transcriptResponse.json();
 
       if (!userText) {
@@ -113,8 +108,8 @@ export default function Home() {
         body: JSON.stringify({ text: aiText }),
       });
 
-      const responseAudioBlob = await ttsResponse.blob();
-      const audioUrl = URL.createObjectURL(responseAudioBlob);
+      const audioBlob = await ttsResponse.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
 
       // Add AI message to conversation
       setConversation((prev) => [
