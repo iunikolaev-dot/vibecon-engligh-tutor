@@ -97,6 +97,7 @@ export default function Home() {
 
       // Step 2: Get AI response (GPT-4)
       setStatus("🤔 AI is thinking...");
+      console.log("Calling chat API...");
       const chatResponse = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -106,17 +107,32 @@ export default function Home() {
         }),
       });
 
+      if (!chatResponse.ok) {
+        const errorData = await chatResponse.json();
+        console.error("Chat API error:", errorData);
+        throw new Error(`Chat failed: ${errorData.details || errorData.error}`);
+      }
+
       const { response: aiText } = await chatResponse.json();
+      console.log("Chat response received:", aiText.substring(0, 50) + "...");
 
       // Step 3: Convert AI text to speech (TTS)
       setStatus("🔊 Generating AI voice...");
+      console.log("Calling TTS API...");
       const ttsResponse = await fetch("/api/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: aiText }),
       });
 
+      if (!ttsResponse.ok) {
+        const errorData = await ttsResponse.json();
+        console.error("TTS API error:", errorData);
+        throw new Error(`TTS failed: ${errorData.details || errorData.error}`);
+      }
+
       const responseAudioBlob = await ttsResponse.blob();
+      console.log("TTS audio received, size:", responseAudioBlob.size, "bytes");
       const audioUrl = URL.createObjectURL(responseAudioBlob);
 
       // Add AI message to conversation
@@ -138,9 +154,10 @@ export default function Home() {
 
       setStatus("✅ Ready for your next message");
       setIsProcessing(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error processing audio:", error);
-      setStatus("❌ Error processing. Try again.");
+      console.error("Full error details:", error.message);
+      setStatus(`❌ Error: ${error.message || 'Unknown error'}`);
       setIsProcessing(false);
     }
   };
@@ -186,7 +203,7 @@ export default function Home() {
             Your English Tutor (Voice Edition)
           </p>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-            v2.1 (Direct API + TTS Fixed) - Build {new Date(Date.now() + (4 * 60 * 60 * 1000)).toISOString().slice(0,16).replace('T', ' ')} GMT+4
+            v2.2 (All Direct APIs) - Build {new Date(Date.now() + (4 * 60 * 60 * 1000)).toISOString().slice(0,16).replace('T', ' ')} GMT+4
           </p>
         </div>
 
