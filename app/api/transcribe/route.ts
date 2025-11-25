@@ -28,9 +28,16 @@ export async function POST(request: NextRequest) {
 
     console.log("Transcribing audio file:", audioFile.name, audioFile.size, "bytes");
 
+    // Convert File to Buffer for OpenAI SDK compatibility
+    const arrayBuffer = await audioFile.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    // Create a File-like object that OpenAI SDK can handle
+    const file = new File([buffer], audioFile.name, { type: audioFile.type });
+
     // Convert to format Whisper expects
     const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
+      file: file,
       model: "whisper-1",
       language: "en",
     });
