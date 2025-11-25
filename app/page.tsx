@@ -3,362 +3,140 @@
 import { useState, useRef, useEffect } from "react";
 
 interface Message {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  audioUrl?: string;
 }
 
-type AppStatus = 
-  | "not_connected"
-  | "connecting"
-  | "connected_idle"
-  | "user_speaking"
-  | "user_speech_ended"
-  | "ai_thinking"
-  | "ai_speaking"
-  | "error";
-
 export default function Home() {
-  const [isConnected, setIsConnected] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [status, setStatus] = useState<AppStatus>("not_connected");
-  const [statusMessage, setStatusMessage] = useState("Not connected");
-  const [isMuted, setIsMuted] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [conversation, setConversation] = useState<Message[]>([]);
-  const [debugEvents, setDebugEvents] = useState<string[]>([]);
-  const [showDebug, setShowDebug] = useState(false);
-  const [currentUserTranscript, setCurrentUserTranscript] = useState("");
-  const [currentAssistantTranscript, setCurrentAssistantTranscript] = useState("");
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const [status, setStatus] = useState("Ready to start");
+  const [currentAudio, setCurrentAudio] = useState<string | null>(null);
+  
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
-  const addDebugEvent = (event: string) => {
-    setDebugEvents((prev) => [...prev.slice(-20), `[${new Date().toLocaleTimeString()}] ${event}`]);
-    console.log(event);
-  };
-
   useEffect(() => {
-    // Create audio element for playback
-    if (typeof window !== "undefined") {
-      audioElementRef.current = document.createElement("audio");
-      audioElementRef.current.autoplay = true;
-    }
-  }, []);
-
-  useEffect(() => {
-    // Auto-scroll to bottom of conversation
     conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [conversation]);
 
-  const startConversation = async () => {
-    setIsConnecting(true);
-    setStatus("connecting");
-    setStatusMessage("Connecting to OpenAI...");
-    addDebugEvent("🔌 Starting connection...");
-
+  const startRecording = async () => {
     try {
-      // Get ephemeral token from our API
-      addDebugEvent("📡 Requesting session token...");
-      const tokenResponse = await fetch("/api/session");
-      const data = await tokenResponse.json();
+      setStatus("🎤 Recording your voice...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
 
-      addDebugEvent(`📦 Session response: ${JSON.stringify(data).substring(0, 100)}...`);
-
-      if (!data.client_secret?.value) {
-        addDebugEvent(`❌ No client_secret in response: ${JSON.stringify(data)}`);
-        throw new Error("Failed to get session token");
-      }
-
-      const EPHEMERAL_KEY = data.client_secret.value;
-      addDebugEvent(`✅ Session token received: ${EPHEMERAL_KEY.substring(0, 10)}...`);
-
-      // Create peer connection
-      addDebugEvent("🔗 Creating WebRTC connection...");
-      const pc = new RTCPeerConnection();
-      peerConnectionRef.current = pc;
-
-      // Set up audio for playback
-      pc.ontrack = (e) => {
-        addDebugEvent("🎵 Audio track received from OpenAI");
-        if (audioElementRef.current) {
-          audioElementRef.current.srcObject = e.streams[0];
-          audioElementRef.current.play().catch((err) => {
-            addDebugEvent(`⚠️ Audio playback error: ${err.message}`);
-          });
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
         }
       };
 
-      // Monitor connection state
-      pc.onconnectionstatechange = () => {
-        addDebugEvent(`🔗 Connection state: ${pc.connectionState}`);
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        await processAudio(audioBlob);
+        stream.getTracks().forEach((track) => track.stop());
       };
 
-      pc.oniceconnectionstatechange = () => {
-        addDebugEvent(`🧊 ICE state: ${pc.iceConnectionState}`);
-      };
-
-      // Add local audio track with specific constraints
-      addDebugEvent("🎤 Requesting microphone access...");
-      const ms = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 24000,
-        } 
-      });
-      const audioTrack = ms.getTracks()[0];
-      addDebugEvent(`✅ Microphone track: ${audioTrack.label}, state: ${audioTrack.readyState}`);
-      pc.addTrack(audioTrack, ms);
-      addDebugEvent("✅ Microphone connected");
-
-      // Set up data channel for session config
-      const dc = pc.createDataChannel("oai-events");
-      dataChannelRef.current = dc;
-
-      dc.addEventListener("open", () => {
-        addDebugEvent("✅ Data channel opened!");
-        setStatus("connected_idle");
-        setStatusMessage("Connected! Waiting for you to speak...");
-        setIsConnected(true);
-        setIsConnecting(false);
-
-        // Send session configuration
-        const sessionConfig = {
-          type: "session.update",
-          session: {
-            modalities: ["text", "audio"],
-            instructions: getTutorInstructions(),
-            voice: "alloy",
-            input_audio_format: "pcm16",
-            output_audio_format: "pcm16",
-            input_audio_transcription: {
-              model: "whisper-1",
-            },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 700,
-            },
-          },
-        };
-
-        addDebugEvent("📤 Sending session configuration...");
-        dc.send(JSON.stringify(sessionConfig));
-
-        // Trigger initial greeting from AI
-        setTimeout(() => {
-          addDebugEvent("👋 Requesting initial greeting...");
-          const greetingPrompt = {
-            type: "response.create",
-            response: {
-              modalities: ["text", "audio"],
-              instructions: "Greet Ilya and ask him what he'd like to focus on today: business/marketing or lifestyle topics. Keep it short and natural.",
-            },
-          };
-          dc.send(JSON.stringify(greetingPrompt));
-        }, 500);
-      });
-
-      dc.addEventListener("message", (e) => {
-        const msg = JSON.parse(e.data);
-        addDebugEvent(`📨 Event: ${msg.type}`);
-
-        // Session events
-        if (msg.type === "session.created") {
-          addDebugEvent("✅ Session created successfully");
-        }
-
-        if (msg.type === "session.updated") {
-          addDebugEvent("✅ Session configured");
-        }
-
-        // Input audio events (when YOU speak)
-        if (msg.type === "input_audio_buffer.speech_started") {
-          addDebugEvent("🎤 You started speaking");
-          setStatus("user_speaking");
-          setStatusMessage("🎤 Listening to you...");
-        }
-
-        if (msg.type === "input_audio_buffer.speech_stopped") {
-          addDebugEvent("🛑 You stopped speaking");
-          setStatus("user_speech_ended");
-          setStatusMessage("⏳ Processing your speech...");
-          
-          // Note: Don't commit manually - let server VAD handle it
-          // The buffer being empty suggests audio isn't flowing properly
-        }
-
-        // Conversation item events (transcription)
-        if (msg.type === "conversation.item.created") {
-          addDebugEvent(`💬 Conversation item created: ${msg.item?.role || "unknown"}`);
-        }
-
-        if (msg.type === "input_audio_buffer.committed") {
-          addDebugEvent("✅ Audio buffer committed to conversation");
-        }
-
-        if (msg.type === "conversation.item.input_audio_transcription.completed") {
-          const transcript = msg.transcript || "";
-          addDebugEvent(`📝 Your transcript: "${transcript}"`);
-          setCurrentUserTranscript(transcript);
-          if (transcript) {
-            setConversation((prev) => [
-              ...prev,
-              { role: "user", content: transcript, timestamp: new Date() },
-            ]);
-          }
-          setStatus("ai_thinking");
-          setStatusMessage("🤔 AI is thinking...");
-        }
-
-        // Response events (AI responding)
-        if (msg.type === "response.created") {
-          addDebugEvent("🤖 AI response started");
-          setStatus("ai_thinking");
-          setStatusMessage("🤔 AI is preparing response...");
-        }
-
-        if (msg.type === "response.output_item.added") {
-          addDebugEvent("📤 AI output item added");
-        }
-
-        if (msg.type === "response.content_part.added") {
-          addDebugEvent("📄 AI content part added");
-        }
-
-        if (msg.type === "response.audio.delta") {
-          // Audio chunks being sent
-          if (status !== "ai_speaking") {
-            setStatus("ai_speaking");
-            setStatusMessage("🔊 AI is speaking...");
-            addDebugEvent("🔊 AI started speaking");
-          }
-        }
-
-        if (msg.type === "response.audio_transcript.delta") {
-          const delta = msg.delta || "";
-          setCurrentAssistantTranscript((prev) => prev + delta);
-          setStatus("ai_speaking");
-          setStatusMessage("🔊 AI is speaking...");
-        }
-
-        if (msg.type === "response.audio_transcript.done") {
-          const transcript = msg.transcript || currentAssistantTranscript;
-          addDebugEvent(`🗣️ AI transcript: "${transcript}"`);
-          if (transcript) {
-            setConversation((prev) => [
-              ...prev,
-              { role: "assistant", content: transcript, timestamp: new Date() },
-            ]);
-            setCurrentAssistantTranscript("");
-          }
-        }
-
-        if (msg.type === "response.done") {
-          addDebugEvent("✅ AI response completed");
-          setStatus("connected_idle");
-          setStatusMessage("👂 Listening... (speak now)");
-          setCurrentAssistantTranscript("");
-        }
-
-        // Rate limit info
-        if (msg.type === "rate_limits.updated") {
-          addDebugEvent(`📊 Rate limits updated`);
-        }
-
-        // Error handling
-        if (msg.type === "error") {
-          const errorMsg = msg.error?.message || "Unknown error";
-          addDebugEvent(`❌ Error: ${errorMsg}`);
-          setStatus("error");
-          setStatusMessage(`Error: ${errorMsg}`);
-          console.error("OpenAI error:", msg.error);
-        }
-      });
-
-      // Create and set local description
-      addDebugEvent("📋 Creating offer...");
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // Send offer to OpenAI
-      const baseUrl = "https://api.openai.com/v1/realtime";
-      const model = "gpt-4o-realtime-preview-2024-12-17";
-      addDebugEvent(`📡 Connecting to ${model}...`);
-      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
-        method: "POST",
-        body: offer.sdp,
-        headers: {
-          Authorization: `Bearer ${EPHEMERAL_KEY}`,
-          "Content-Type": "application/sdp",
-        },
-      });
-
-      if (!sdpResponse.ok) {
-        const errorText = await sdpResponse.text();
-        addDebugEvent(`❌ SDP Response status: ${sdpResponse.status}`);
-        addDebugEvent(`❌ SDP Response body: ${errorText}`);
-        addDebugEvent(`❌ Request was to: ${baseUrl}?model=${model}`);
-        addDebugEvent(`❌ Auth header: Bearer ${EPHEMERAL_KEY.substring(0, 15)}...`);
-        throw new Error(`OpenAI API error: ${sdpResponse.status} - ${errorText}`);
-      }
-
-      const answerSdp = await sdpResponse.text();
-      await pc.setRemoteDescription({
-        type: "answer",
-        sdp: answerSdp,
-      });
-      addDebugEvent("✅ WebRTC connection established");
+      mediaRecorder.start();
+      setIsRecording(true);
     } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      addDebugEvent(`❌ Connection failed: ${errorMsg}`);
-      console.error("Connection error:", error);
-      setStatus("error");
-      setStatusMessage("Connection failed. Please try again.");
-      setIsConnecting(false);
-      setIsConnected(false);
+      console.error("Error starting recording:", error);
+      setStatus("❌ Microphone access denied");
     }
   };
 
-  const stopConversation = () => {
-    addDebugEvent("🛑 Stopping conversation...");
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setIsProcessing(true);
+      setStatus("⏳ Processing your speech...");
     }
-    if (dataChannelRef.current) {
-      dataChannelRef.current.close();
-      dataChannelRef.current = null;
-    }
-    setIsConnected(false);
-    setStatus("not_connected");
-    setStatusMessage("Disconnected");
-    addDebugEvent("✅ Disconnected");
   };
 
-  const getStatusColor = (status: AppStatus): string => {
-    switch (status) {
-      case "not_connected":
-        return "bg-gray-500";
-      case "connecting":
-        return "bg-yellow-500 animate-pulse";
-      case "connected_idle":
-        return "bg-green-500";
-      case "user_speaking":
-        return "bg-blue-500 animate-pulse";
-      case "user_speech_ended":
-        return "bg-orange-500";
-      case "ai_thinking":
-        return "bg-purple-500 animate-pulse";
-      case "ai_speaking":
-        return "bg-indigo-500 animate-pulse";
-      case "error":
-        return "bg-red-500";
-      default:
-        return "bg-gray-500";
+  const processAudio = async (audioBlob: Blob) => {
+    try {
+      // Step 1: Convert speech to text (Whisper)
+      setStatus("📝 Transcribing your speech...");
+      const formData = new FormData();
+      formData.append("audio", audioBlob);
+
+      const transcriptResponse = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+
+      const { text: userText } = await transcriptResponse.json();
+
+      if (!userText) {
+        throw new Error("No transcription received");
+      }
+
+      // Add user message to conversation
+      setConversation((prev) => [
+        ...prev,
+        { role: "user", content: userText, timestamp: new Date() },
+      ]);
+
+      // Step 2: Get AI response (GPT-4)
+      setStatus("🤔 AI is thinking...");
+      const chatResponse = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: userText,
+          history: conversation,
+        }),
+      });
+
+      const { response: aiText } = await chatResponse.json();
+
+      // Step 3: Convert AI text to speech (TTS)
+      setStatus("🔊 Generating AI voice...");
+      const ttsResponse = await fetch("/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: aiText }),
+      });
+
+      const audioBlob = await ttsResponse.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Add AI message to conversation
+      setConversation((prev) => [
+        ...prev,
+        { role: "assistant", content: aiText, timestamp: new Date(), audioUrl },
+      ]);
+
+      // Play the audio
+      setCurrentAudio(audioUrl);
+      if (audioRef.current) {
+        audioRef.current.src = audioUrl;
+        audioRef.current.play();
+      }
+
+      setStatus("✅ Ready for your next message");
+      setIsProcessing(false);
+    } catch (error) {
+      console.error("Error processing audio:", error);
+      setStatus("❌ Error processing. Try again.");
+      setIsProcessing(false);
+    }
+  };
+
+  const playAudio = (audioUrl: string) => {
+    if (audioRef.current) {
+      audioRef.current.src = audioUrl;
+      audioRef.current.play();
     }
   };
 
@@ -385,18 +163,6 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const toggleMute = () => {
-    if (peerConnectionRef.current) {
-      const senders = peerConnectionRef.current.getSenders();
-      senders.forEach((sender) => {
-        if (sender.track?.kind === "audio") {
-          sender.track.enabled = isMuted;
-        }
-      });
-      setIsMuted(!isMuted);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="max-w-4xl mx-auto py-8">
@@ -405,97 +171,48 @@ export default function Home() {
             VibeCon
           </h1>
           <p className="text-gray-600 dark:text-gray-300">
-            Your English Tutor
+            Your English Tutor (Voice Edition)
           </p>
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 mb-4">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex-1">
-              <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm text-gray-600 dark:text-gray-300">
-                    Status
-                  </p>
-                  <button
-                    onClick={() => setShowDebug(!showDebug)}
-                    className="text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded hover:bg-gray-300 dark:hover:bg-gray-500"
-                  >
-                    {showDebug ? "Hide" : "Show"} Debug
-                  </button>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className={`w-3 h-3 rounded-full ${getStatusColor(status)}`}></div>
-                  <p className="text-lg font-semibold text-gray-800 dark:text-white">
-                    {statusMessage}
-                  </p>
-                </div>
-              </div>
+          <div className="mb-6">
+            <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 text-center">
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">
+                Status
+              </p>
+              <p className="text-lg font-semibold text-gray-800 dark:text-white">
+                {status}
+              </p>
             </div>
           </div>
 
-          {showDebug && (
-            <div className="mb-4 bg-black text-green-400 p-4 rounded-lg font-mono text-xs max-h-48 overflow-y-auto">
-              <div className="flex justify-between items-center mb-2">
-                <p className="font-bold text-green-300">Debug Console</p>
-                <button
-                  onClick={() => setDebugEvents([])}
-                  className="text-red-400 hover:text-red-300"
-                >
-                  Clear
-                </button>
-              </div>
-              {debugEvents.length === 0 ? (
-                <p className="opacity-50">No events yet...</p>
-              ) : (
-                debugEvents.map((event, idx) => (
-                  <div key={idx} className="mb-1">
-                    {event}
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
           <div className="space-y-3">
-            {!isConnected && !isConnecting && (
+            {!isRecording && !isProcessing && (
               <button
-                onClick={startConversation}
+                onClick={startRecording}
                 className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105"
               >
-                Start Conversation
+                🎤 Start Recording
               </button>
             )}
 
-            {isConnecting && (
+            {isRecording && (
+              <button
+                onClick={stopRecording}
+                className="w-full bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl animate-pulse"
+              >
+                ⏹ Stop Recording
+              </button>
+            )}
+
+            {isProcessing && (
               <button
                 disabled
                 className="w-full bg-gray-400 text-white font-semibold py-4 px-6 rounded-xl cursor-not-allowed"
               >
-                Connecting...
+                ⏳ Processing...
               </button>
-            )}
-
-            {isConnected && (
-              <div className="flex gap-3">
-                <button
-                  onClick={toggleMute}
-                  className={`flex-1 ${
-                    isMuted
-                      ? "bg-yellow-500 hover:bg-yellow-600"
-                      : "bg-green-500 hover:bg-green-600"
-                  } text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200`}
-                >
-                  {isMuted ? "🔇 Unmute" : "🎤 Mute"}
-                </button>
-
-                <button
-                  onClick={stopConversation}
-                  className="flex-1 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200"
-                >
-                  ⏹ End
-                </button>
-              </div>
             )}
 
             {conversation.length > 0 && (
@@ -516,31 +233,18 @@ export default function Home() {
             )}
           </div>
 
-          {isConnected && (
-            <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-              <p className="text-xs font-bold text-blue-800 dark:text-blue-300 mb-2">
-                Status Guide:
-              </p>
-              <div className="grid grid-cols-2 gap-2 text-xs text-blue-700 dark:text-blue-300">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                  <span>Ready/Idle</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                  <span>You Speaking</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                  <span>AI Thinking</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                  <span>AI Speaking</span>
-                </div>
-              </div>
-            </div>
-          )}
+          <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+            <p className="text-xs font-bold text-blue-800 dark:text-blue-300 mb-2">
+              How to use:
+            </p>
+            <ol className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
+              <li>1. Click "Start Recording" and speak in English</li>
+              <li>2. Click "Stop Recording" when done</li>
+              <li>3. Wait for AI to transcribe, analyze, and respond</li>
+              <li>4. Listen to the AI's voice feedback</li>
+              <li>5. Repeat!</li>
+            </ol>
+          </div>
         </div>
 
         {conversation.length > 0 && (
@@ -563,9 +267,19 @@ export default function Home() {
                         : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white"
                     }`}
                   >
-                    <p className="text-xs opacity-75 mb-1">
-                      {msg.role === "user" ? "You" : "Tutor"} •{" "}
-                      {msg.timestamp.toLocaleTimeString()}
+                    <p className="text-xs opacity-75 mb-1 flex items-center justify-between">
+                      <span>
+                        {msg.role === "user" ? "You" : "Tutor"} •{" "}
+                        {msg.timestamp.toLocaleTimeString()}
+                      </span>
+                      {msg.audioUrl && (
+                        <button
+                          onClick={() => playAudio(msg.audioUrl!)}
+                          className="ml-2 hover:scale-110 transition-transform"
+                        >
+                          🔊
+                        </button>
+                      )}
                     </p>
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                   </div>
@@ -578,81 +292,16 @@ export default function Home() {
 
         {conversation.length === 0 && (
           <div className="text-center text-gray-500 dark:text-gray-400 mt-8">
-            <p>Hey Ilya! Click "Start Conversation" to practice your English.</p>
-            <p className="text-sm mt-2">Your conversation will appear here as you speak.</p>
+            <p>Hey Ilya! Click "Start Recording" to practice your English.</p>
+            <p className="text-sm mt-2">
+              Record your voice, and I'll help you improve!
+            </p>
           </div>
         )}
+
+        <audio ref={audioRef} className="hidden" />
       </div>
     </div>
   );
-}
-
-function getTutorInstructions(): string {
-  return `You are a conversational English tutor working with one specific student named Ilya.
-
-He is an upper-intermediate speaker who wants to:
-• Improve spoken fluency and confidence
-• Learn and actively use phrasal verbs and natural expressions
-• Practice business English in the context of marketing, growth, product, and analytics
-• Keep his lifestyle English sharp (travel, health, daily life, relationships, hobbies)
-
-Your environment:
-• You are used inside a voice-based web app with a "Start conversation" button.
-• Most interactions will be short audio turns, not long essays.
-• Prioritize natural spoken English over written, formal style.
-
-Language rules:
-• Default to English in all replies.
-• Ilya may sometimes switch to Russian for quick questions; you can briefly answer or clarify in Russian, but always switch back to English.
-• Never start replies by describing your role or restating these instructions. Just talk like a human tutor.
-
-Tone and style:
-• Be friendly, direct, and slightly nerdy about language.
-• Speak like a smart colleague, not a school teacher.
-• Use real-world marketing and product examples: user acquisition, performance marketing, experiments, funnels, cohorts, LTV, campaigns, creatives, paid channels, OOH, fintech, apps, etc.
-• Prefer short, spoken-style sentences over long complex ones.
-
-Level and difficulty:
-• Treat Ilya as upper intermediate:
-  - Push his vocabulary and structures slightly above his comfort zone.
-  - Avoid oversimplified "textbook" English.
-  - When you introduce advanced words or phrasal verbs, briefly explain them in simple English and give one or two clear examples in context.
-
-Corrections and feedback:
-• Do not interrupt him mid-sentence.
-• After his message, give compact feedback:
-  1. First, a short, corrected version of one or two of his key sentences.
-  2. Then explain 1–3 important points (grammar, vocabulary, pronunciation, or phrasing).
-  3. Give 1–2 additional example sentences for the most important correction.
-• Prioritize issues that make him sound less natural (word choice, collocations, phrasal verbs) over tiny grammar details.
-
-Phrasal verbs and natural expressions:
-• In almost every turn, highlight 1–3 useful phrasal verbs or natural phrases that match the topic.
-• Explain each briefly and show how to use it in marketing or everyday contexts.
-• Encourage him explicitly to repeat and reuse these in his next answer.
-
-Conversation structure:
-• At the start of a session, briefly greet him and ask 1–2 questions to choose a focus:
-  - "business / marketing", "product & data", or "lifestyle / daily life".
-• Then follow this pattern:
-  1. Ask a question that invites him to speak for 30–90 seconds.
-  2. Listen to his answer.
-  3. Give corrections and explanations as described above.
-  4. Teach a few phrasal verbs or natural phrases tied to what he said.
-  5. Ask a follow-up question or propose a mini-roleplay to keep him talking.
-
-Scenario examples:
-• For business: simulate standups, performance reviews, post-mortems, planning meetings, agency calls, campaign deep dives, product discussions.
-• For lifestyle: talk about travel plans, health routines, relationships, money, goals, books, sports, and everyday decisions.
-• Use realistic situations where he would naturally use English at work or while traveling.
-
-Progression:
-• Remember which topics, phrasal verbs, and key mistakes appeared in the last few turns of this session and recycle them later so he strengthens them.
-• From time to time, summarize what he is doing well and what to focus on next, but keep it short and spoken-style.
-
-Critical constraints:
-• Keep your replies reasonably short and suitable for voice: usually 3–8 sentences, unless he explicitly asks for a longer explanation.
-• Always end your turn with a clear question or task that encourages him to speak again.
-• Do not output code examples, JSON, or markdown formatting. Just speak as if you are in a voice call with him.`;
 }
 
