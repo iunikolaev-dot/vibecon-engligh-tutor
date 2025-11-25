@@ -2,14 +2,24 @@
 
 import { useState, useRef, useEffect } from "react";
 
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+}
+
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [status, setStatus] = useState("Not connected");
   const [isMuted, setIsMuted] = useState(false);
+  const [conversation, setConversation] = useState<Message[]>([]);
+  const [currentUserTranscript, setCurrentUserTranscript] = useState("");
+  const [currentAssistantTranscript, setCurrentAssistantTranscript] = useState("");
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Create audio element for playback
@@ -18,6 +28,11 @@ export default function Home() {
       audioElementRef.current.autoplay = true;
     }
   }, []);
+
+  useEffect(() => {
+    // Auto-scroll to bottom of conversation
+    conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversation]);
 
   const startConversation = async () => {
     setIsConnecting(true);
@@ -67,6 +82,9 @@ export default function Home() {
             voice: "alloy",
             input_audio_format: "pcm16",
             output_audio_format: "pcm16",
+            input_audio_transcription: {
+              model: "whisper-1",
+            },
             turn_detection: {
               type: "server_vad",
               threshold: 0.5,
@@ -76,15 +94,57 @@ export default function Home() {
           },
         };
 
+        console.log("Sending session config:", sessionConfig);
         dc.send(JSON.stringify(sessionConfig));
       });
 
       dc.addEventListener("message", (e) => {
         const msg = JSON.parse(e.data);
-        if (msg.type === "response.done" || msg.type === "response.audio.done") {
+        console.log("OpenAI event:", msg.type, msg);
+
+        // Handle user speech transcription
+        if (msg.type === "conversation.item.input_audio_transcription.completed") {
+          const transcript = msg.transcript || "";
+          setCurrentUserTranscript(transcript);
+          setConversation((prev) => [
+            ...prev,
+            { role: "user", content: transcript, timestamp: new Date() },
+          ]);
+          setStatus("Processing...");
+        }
+
+        // Handle assistant response text
+        if (msg.type === "response.text.delta") {
+          setCurrentAssistantTranscript((prev) => prev + (msg.delta || ""));
+          setStatus("AI is speaking...");
+        }
+
+        if (msg.type === "response.audio_transcript.delta") {
+          setCurrentAssistantTranscript((prev) => prev + (msg.delta || ""));
+          setStatus("AI is speaking...");
+        }
+
+        if (msg.type === "response.audio_transcript.done") {
+          const transcript = msg.transcript || currentAssistantTranscript;
+          if (transcript) {
+            setConversation((prev) => [
+              ...prev,
+              { role: "assistant", content: transcript, timestamp: new Date() },
+            ]);
+            setCurrentAssistantTranscript("");
+          }
           setStatus("Listening...");
-        } else if (msg.type === "response.audio_transcript.delta") {
-          setStatus("Speaking...");
+        }
+
+        if (msg.type === "response.done") {
+          setStatus("Listening...");
+          setCurrentAssistantTranscript("");
+        }
+
+        // Handle errors
+        if (msg.type === "error") {
+          console.error("OpenAI error:", msg.error);
+          setStatus("Error: " + (msg.error?.message || "Unknown error"));
         }
       });
 
@@ -130,6 +190,29 @@ export default function Home() {
     setStatus("Disconnected");
   };
 
+  const clearConversation = () => {
+    setConversation([]);
+  };
+
+  const downloadConversation = () => {
+    const conversationText = conversation
+      .map((msg) => {
+        const time = msg.timestamp.toLocaleTimeString();
+        return `[${time}] ${msg.role === "user" ? "You" : "Tutor"}: ${msg.content}`;
+      })
+      .join("\n\n");
+
+    const blob = new Blob([conversationText], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vibecon-conversation-${new Date().toISOString().split("T")[0]}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const toggleMute = () => {
     if (peerConnectionRef.current) {
       const senders = peerConnectionRef.current.getSenders();
@@ -143,9 +226,9 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
-      <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-8">
-        <div className="text-center mb-8">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
+      <div className="max-w-4xl mx-auto py-8">
+        <div className="text-center mb-6">
           <h1 className="text-4xl font-bold text-gray-800 dark:text-white mb-2">
             VibeCon
           </h1>
@@ -154,62 +237,119 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="mb-6">
-          <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 text-center">
-            <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">
-              Status
-            </p>
-            <p className="text-lg font-semibold text-gray-800 dark:text-white">
-              {status}
-            </p>
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 mb-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex-1">
+              <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4 text-center">
+                <p className="text-sm text-gray-600 dark:text-gray-300 mb-1">
+                  Status
+                </p>
+                <p className="text-lg font-semibold text-gray-800 dark:text-white">
+                  {status}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {!isConnected && !isConnecting && (
+              <button
+                onClick={startConversation}
+                className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105"
+              >
+                Start Conversation
+              </button>
+            )}
+
+            {isConnecting && (
+              <button
+                disabled
+                className="w-full bg-gray-400 text-white font-semibold py-4 px-6 rounded-xl cursor-not-allowed"
+              >
+                Connecting...
+              </button>
+            )}
+
+            {isConnected && (
+              <div className="flex gap-3">
+                <button
+                  onClick={toggleMute}
+                  className={`flex-1 ${
+                    isMuted
+                      ? "bg-yellow-500 hover:bg-yellow-600"
+                      : "bg-green-500 hover:bg-green-600"
+                  } text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200`}
+                >
+                  {isMuted ? "🔇 Unmute" : "🎤 Mute"}
+                </button>
+
+                <button
+                  onClick={stopConversation}
+                  className="flex-1 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-semibold py-3 px-4 rounded-xl transition-all duration-200"
+                >
+                  ⏹ End
+                </button>
+              </div>
+            )}
+
+            {conversation.length > 0 && (
+              <div className="flex gap-3">
+                <button
+                  onClick={downloadConversation}
+                  className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 text-sm"
+                >
+                  📥 Download
+                </button>
+                <button
+                  onClick={clearConversation}
+                  className="flex-1 bg-gray-500 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded-lg transition-all duration-200 text-sm"
+                >
+                  🗑 Clear
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="space-y-4">
-          {!isConnected && !isConnecting && (
-            <button
-              onClick={startConversation}
-              className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105"
-            >
-              Start Conversation
-            </button>
-          )}
+        {conversation.length > 0 && (
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6">
+            <h2 className="text-xl font-bold text-gray-800 dark:text-white mb-4">
+              Conversation History
+            </h2>
+            <div className="space-y-4 max-h-96 overflow-y-auto">
+              {conversation.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={`flex ${
+                    msg.role === "user" ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  <div
+                    className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                      msg.role === "user"
+                        ? "bg-blue-500 text-white"
+                        : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-white"
+                    }`}
+                  >
+                    <p className="text-xs opacity-75 mb-1">
+                      {msg.role === "user" ? "You" : "Tutor"} •{" "}
+                      {msg.timestamp.toLocaleTimeString()}
+                    </p>
+                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+              <div ref={conversationEndRef} />
+            </div>
+          </div>
+        )}
 
-          {isConnecting && (
-            <button
-              disabled
-              className="w-full bg-gray-400 text-white font-semibold py-4 px-6 rounded-xl cursor-not-allowed"
-            >
-              Connecting...
-            </button>
-          )}
-
-          {isConnected && (
-            <>
-              <button
-                onClick={toggleMute}
-                className={`w-full ${
-                  isMuted
-                    ? "bg-yellow-500 hover:bg-yellow-600"
-                    : "bg-green-500 hover:bg-green-600"
-                } text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl`}
-              >
-                {isMuted ? "Unmute" : "Mute"}
-              </button>
-
-              <button
-                onClick={stopConversation}
-                className="w-full bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl"
-              >
-                End Conversation
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-          <p>Hey Ilya! Ready to practice your English?</p>
-        </div>
+        {conversation.length === 0 && (
+          <div className="text-center text-gray-500 dark:text-gray-400 mt-8">
+            <p>Hey Ilya! Click "Start Conversation" to practice your English.</p>
+            <p className="text-sm mt-2">Your conversation will appear here as you speak.</p>
+          </div>
+        )}
       </div>
     </div>
   );
